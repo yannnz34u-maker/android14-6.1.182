@@ -1,0 +1,48 @@
+name: Import Android 14 GKI 6.1.182
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout destination repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download official kernel source
+        run: |
+          git clone \
+            --depth=1 \
+            --single-branch \
+            --branch android14-6.1.182_r00 \
+            https://android.googlesource.com/kernel/common \
+            /tmp/kernel-source
+
+      - name: Import source into repository
+        run: |
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/workflows/' \
+            /tmp/kernel-source/ ./
+
+      - name: Commit and push source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Import Android 14 GKI 6.1.182"
+            git push origin HEAD:main
+          else
+            echo "Source already up to date."
+          fi
