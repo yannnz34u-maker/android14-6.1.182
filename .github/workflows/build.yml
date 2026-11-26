@@ -16,7 +16,6 @@ jobs:
     env:
       KBUILD_BUILD_USER: userbuild
       KBUILD_BUILD_HOST: yannn34u
-      LOCALVERSION: -Wowo-Quantum
 
     steps:
       - name: Checkout Kernel Source
@@ -128,16 +127,20 @@ jobs:
 
           cd kernel
 
+          # Remove source-side localversion files
+          rm -f localversion localversion.*
+
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
-            LOCALVERSION=-Wowo-Quantum \
             gki_defconfig
 
-          echo "===== CONFIGURE THINLTO ====="
+          echo "===== CONFIGURE LOCALVERSION AND THINLTO ====="
 
           ./scripts/config --file out/.config \
+            --set-str LOCALVERSION "" \
+            -d LOCALVERSION_AUTO \
             -e LTO_CLANG \
             -e LTO_CLANG_THIN \
             -d LTO_NONE \
@@ -150,10 +153,27 @@ jobs:
             LOCALVERSION=-Wowo-Quantum \
             olddefconfig
 
-          echo "===== LTO CONFIG ====="
+          echo "===== CONFIG CHECK ====="
+
           grep -E \
-            'CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_LTO_NONE' \
+            'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_LTO_NONE' \
             out/.config || true
+
+          echo "===== VERIFY KERNEL RELEASE ====="
+
+          RELEASE="$(make -s O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LOCALVERSION=-Wowo-Quantum \
+            kernelrelease)"
+
+          echo "Kernel release: $RELEASE"
+
+          if [ "$RELEASE" != "6.1.182-Wowo-Quantum" ]; then
+            echo "::error::Unexpected kernel release: $RELEASE"
+            exit 1
+          fi
 
       - name: Compile Kernel Image and Modules
         shell: bash
@@ -183,12 +203,20 @@ jobs:
           ls -lh "$IMAGE"
 
           echo "===== KERNEL RELEASE ====="
-          make O=out \
+
+          RELEASE="$(make -s O=out \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             LOCALVERSION=-Wowo-Quantum \
-            kernelrelease
+            kernelrelease)"
+
+          echo "$RELEASE"
+
+          if [ "$RELEASE" != "6.1.182-Wowo-Quantum" ]; then
+            echo "::error::Kernel release mismatch: $RELEASE"
+            exit 1
+          fi
 
       - name: Clone AnyKernel3
         shell: bash
