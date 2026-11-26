@@ -1,0 +1,311 @@
+
+name: Wowo-Quantum - Android 14 GKI 6.1.182
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_mlgo:
+        description: "Enable Google Clang MLGO ThinLTO inliner"
+        type: boolean
+        required: true
+        default: false
+
+      enable_pgo:
+        description: "Use PGO profile at profiles/vmlinux.profdata"
+        type: boolean
+        required: true
+        default: false
+
+      enable_bolt:
+        description: "Apply BOLT using profiles/vmlinux.fdata"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Wowo-Quantum GKI 6.1.182 + AnyKernel3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    env:
+      KBUILD_BUILD_USER: yannn34u
+      KBUILD_BUILD_HOST: yannn34u
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: kernel
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex \
+            git curl wget zip unzip \
+            libssl-dev libelf-dev \
+            python3 python3-pip \
+            pahole lz4 \
+            device-tree-compiler \
+            rsync ccache \
+            xz-utils
+
+      - name: Download Google Android 14 Clang
+        run: |
+          set -euo pipefail
+
+          CLANG_DIR="$RUNNER_TEMP/google-clang"
+          mkdir -p "$CLANG_DIR"
+
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz"
+
+          curl -fL --retry 5 \
+            "$CLANG_URL" \
+            -o "$RUNNER_TEMP/google-clang.tar.gz"
+
+          tar -xzf "$RUNNER_TEMP/google-clang.tar.gz" \
+            -C "$CLANG_DIR"
+
+          test -x "$CLANG_DIR/bin/clang"
+
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify Google Clang
+        run: |
+          set -euo pipefail
+
+          clang --version
+          ld.lld --version
+          llvm-ar --version
+          llvm-objcopy --version
+
+      - name: Verify Kernel Source
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          echo "===== KERNEL VERSION ====="
+          make -s kernelversion
+
+          echo "===== SOURCE COMMIT ====="
+          git log -1 --oneline
+
+          echo "===== LOCALVERSION ====="
+          cat localversion
+
+          grep -q '6.1.182' Makefile
+          grep -q 'Wowo-Quantum' localversion
+
+      - name: Configure GKI Defconfig
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            gki_defconfig
+
+          # Enable ThinLTO
+          ./scripts/config --file out/.config \
+            -e LTO_CLANG \
+            -e LTO_CLANG_THIN \
+            -d LTO_NONE \
+            -d LTO_CLANG_FULL
+
+          # MLGO requires ThinLTO
+          if [ "${{ inputs.enable_mlgo }}" = "true" ]; then
+            echo "MLGO enabled"
+          fi
+
+          make O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            olddefconfig
+
+          echo "===== LTO CONFIG ====="
+          grep -E 'CONFIG_LTO_CLANG|CONFIG_LTO_NONE' out/.config || true
+
+      - name: Prepare PGO Profile
+        if: ${{ inputs.enable_pgo }}
+        run: |
+          set -euo pipefail
+
+          PROFILE="kernel/profiles/vmlinux.profdata"
+
+          if [ ! -s "$PROFILE" ]; then
+            echo "::error::Missing PGO profile: $PROFILE"
+            exit 1
+          fi
+
+          echo "PGO_PROFILE=$GITHUB_WORKSPACE/$PROFILE" >> "$GITHUB_ENV"
+
+      - name: Prepare BOLT
+        if: ${{ inputs.enable_bolt }}
+        run: |
+          set -euo pipefail
+
+          sudo apt-get install -y llvm-bolt-18
+
+          PROFILE="kernel/profiles/vmlinux.fdata"
+
+          if [ ! -s "$PROFILE" ]; then
+            echo "::error::Missing BOLT profile: $PROFILE"
+            exit 1
+          fi
+
+          BOLT_BIN="$(command -v llvm-bolt-18 || command -v llvm-bolt || true)"
+
+          if [ -z "$BOLT_BIN" ]; then
+            echo "::error::llvm-bolt executable not found"
+            exit 1
+          fi
+
+          echo "BOLT_BIN=$BOLT_BIN" >> "$GITHUB_ENV"
+          echo "BOLT_PROFILE=$GITHUB_WORKSPACE/$PROFILE" >> "$GITHUB_ENV"
+
+      - name: Configure MLGO and PGO Linker Flags
+        run: |
+          set -euo pipefail
+
+          LDFLAGS_VMLINUX=""
+
+          # BOLT requires relocations in the linked vmlinux
+          if [ "${{ inputs.enable_bolt }}" = "true" ]; then
+            LDFLAGS_VMLINUX="$LDFLAGS_VMLINUX --emit-relocs"
+          fi
+
+          # Google Clang MLGO release inliner
+          if [ "${{ inputs.enable_mlgo }}" = "true" ]; then
+            LDFLAGS_VMLINUX="$LDFLAGS_VMLINUX --mllvm=-enable-ml-inliner=release"
+          fi
+
+          # PGO profile for ThinLTO
+          if [ "${{ inputs.enable_pgo }}" = "true" ]; then
+            LDFLAGS_VMLINUX="$LDFLAGS_VMLINUX -lto-cs-profile-file=$PGO_PROFILE"
+          fi
+
+          echo "LDFLAGS_VMLINUX=$LDFLAGS_VMLINUX" >> "$GITHUB_ENV"
+
+      - name: Compile vmlinux
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LDFLAGS_vmlinux="$LDFLAGS_VMLINUX" \
+            vmlinux
+
+          test -s out/vmlinux
+
+      - name: Apply BOLT Optimization
+        if: ${{ inputs.enable_bolt }}
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          "$BOLT_BIN" out/vmlinux \
+            -o out/vmlinux.bolt \
+            -data="$BOLT_PROFILE" \
+            -reorder-blocks=ext-tsp \
+            -reorder-functions=hfsort+ \
+            -split-functions
+
+          test -s out/vmlinux.bolt
+
+          mv out/vmlinux.bolt out/vmlinux
+
+      - name: Compile Kernel Image
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image
+
+          test -s out/arch/arm64/boot/Image
+
+          echo "===== KERNEL IMAGE ====="
+          ls -lh out/arch/arm64/boot/Image
+
+      - name: Clone AnyKernel3
+        run: |
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3.git \
+            AnyKernel3
+
+      - name: Prepare AnyKernel3
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+
+          cp kernel/out/arch/arm64/boot/Image \
+            AnyKernel3/Image
+
+          cat > AnyKernel3/anykernel.sh <<'AK3EOF'
+          properties() { '
+          kernel.string=Wowo-Quantum GKI 6.1.182
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=malachite
+          device.name2=missi
+          supported.versions=
+          '; }
+
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          AK3EOF
+
+      - name: Pack AnyKernel3 ZIP
+        run: |
+          set -euo pipefail
+
+          cd AnyKernel3
+
+          zip -r9 \
+            ../release/Wowo-Quantum-Malachite-GKI-6.1.182.zip . \
+            -x '.git/*' \
+            -x 'README.md' \
+            -x '*placeholder*'
+
+      - name: Upload Kernel Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wowo-Quantum-GKI-6.1.182
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/vmlinux
+            release/Wowo-Quantum-Malachite-GKI-6.1.182.zip
+          retention-days: 14
