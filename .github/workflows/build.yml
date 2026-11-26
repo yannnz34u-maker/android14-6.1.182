@@ -26,6 +26,19 @@ jobs:
           fetch-depth: 0
           path: kernel
 
+      - name: Disable Automatic Git Kernel Suffix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          # Empty SCM version file suppresses automatic Git suffix
+          : > .scmversion
+
+          echo "===== SCM VERSION ====="
+          ls -l .scmversion
+
       - name: Verify Kernel Source
         shell: bash
         run: |
@@ -130,6 +143,9 @@ jobs:
           # Remove source-side localversion files
           rm -f localversion localversion.*
 
+          # Ensure SCM suffix remains disabled
+          : > .scmversion
+
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
@@ -181,6 +197,9 @@ jobs:
           set -euo pipefail
 
           cd kernel
+
+          # Keep SCM suffix disabled during compilation
+          : > .scmversion
 
           make -j"$(nproc)" \
             O=out \
