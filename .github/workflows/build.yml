@@ -10,6 +10,7 @@ on:
         default: google
         options:
           - google
+          - aosp-clang-r639965
           - llvm-23.1.4
           - neutron-06092026
 
@@ -101,6 +102,15 @@ jobs:
               curl -fL --retry 5 "$CLANG_URL" \
                 -o "$RUNNER_TEMP/google-clang.tar.gz"
               tar -xzf "$RUNNER_TEMP/google-clang.tar.gz" -C "$CLANG_DIR"
+              ;;
+
+            aosp-clang-r639965)
+              echo "Selected: AOSP Clang r639965 (build 17033917)"
+              AOSP_CLANG_URL="https://github.com/ip2na/aosp_clang_mirror/releases/download/clang-r639965-17033917/clang-r639965.tar.gz"
+              curl -fL --retry 5 "$AOSP_CLANG_URL" \\
+                -o "$RUNNER_TEMP/aosp-clang-r639965.tar.gz"
+              tar -xzf "$RUNNER_TEMP/aosp-clang-r639965.tar.gz" \\
+                -C "$CLANG_DIR"
               ;;
 
             llvm-23.1.4)
