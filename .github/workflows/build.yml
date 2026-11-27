@@ -1,3 +1,4 @@
+
 name: Wowo-Quantum - Android 14 GKI 6.1.182
 
 on:
@@ -7,9 +8,10 @@ on:
         description: "Select Clang toolchain"
         type: choice
         required: true
-        default: aosp-clang-r639965
+        default: aosp-clang-r614150
         options:
-          - aosp-clang-r639965
+          - google
+          - aosp-clang-r614150
           - llvm-23.1.4
           - neutron-06092026
 
@@ -71,14 +73,12 @@ jobs:
           test -f Makefile
           test -d arch/arm64
           test -d scripts
-
           echo "Kernel source verified: $VERSION"
 
       - name: Install Build Dependencies
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential flex git curl wget \
@@ -97,16 +97,27 @@ jobs:
           mkdir -p "$CLANG_DIR"
 
           case "$SELECTED_COMPILER" in
-            aosp-clang-r639965)
-              echo "Selected: Official AOSP Clang r639965 (24.0.1)"
+            google)
+              echo "Selected: Google Android 14 Clang r487747c"
 
-              CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r639965.tar.gz"
+              CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz"
 
-              curl -fL --retry 5 \
-                "$CLANG_URL" \
-                -o "$RUNNER_TEMP/aosp-clang-r639965.tar.gz"
+              curl -fL --retry 5 "$CLANG_URL" \
+                -o "$RUNNER_TEMP/google-clang.tar.gz"
 
-              tar -xzf "$RUNNER_TEMP/aosp-clang-r639965.tar.gz" \
+              tar -xzf "$RUNNER_TEMP/google-clang.tar.gz" \
+                -C "$CLANG_DIR"
+              ;;
+
+            aosp-clang-r614150)
+              echo "Selected: AOSP Clang 23.0.1 r614150"
+
+              AOSP_CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/mirror-goog-main-llvm-toolchain-source/clang-r614150.tar.gz"
+
+              curl -fL --retry 5 "$AOSP_CLANG_URL" \
+                -o "$RUNNER_TEMP/aosp-clang-r614150.tar.gz"
+
+              tar -xzf "$RUNNER_TEMP/aosp-clang-r614150.tar.gz" \
                 -C "$CLANG_DIR"
               ;;
 
@@ -115,8 +126,7 @@ jobs:
 
               LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/LLVM-23.1.4-Linux-X64.tar.xz"
 
-              curl -fL --retry 5 \
-                "$LLVM_URL" \
+              curl -fL --retry 5 "$LLVM_URL" \
                 -o "$RUNNER_TEMP/llvm-23.1.4.tar.xz"
 
               tar -xJf "$RUNNER_TEMP/llvm-23.1.4.tar.xz" \
@@ -165,16 +175,20 @@ jobs:
 
               case "$ASSET_NAME" in
                 *.tar.xz|*.txz)
-                  tar -xJf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  tar -xJf "$RUNNER_TEMP/neutron-toolchain" \
+                    -C "$CLANG_DIR"
                   ;;
                 *.tar.gz|*.tgz)
-                  tar -xzf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  tar -xzf "$RUNNER_TEMP/neutron-toolchain" \
+                    -C "$CLANG_DIR"
                   ;;
                 *.tar.zst)
-                  tar --zstd -xf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  tar --zstd -xf "$RUNNER_TEMP/neutron-toolchain" \
+                    -C "$CLANG_DIR"
                   ;;
                 *.zip)
-                  unzip -q "$RUNNER_TEMP/neutron-toolchain" -d "$CLANG_DIR"
+                  unzip -q "$RUNNER_TEMP/neutron-toolchain" \
+                    -d "$CLANG_DIR"
                   ;;
                 *)
                   echo "::error::Unsupported Neutron archive format: $ASSET_NAME"
@@ -195,9 +209,7 @@ jobs:
 
           if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN/clang" ]; then
             echo "::error::clang executable not found in downloaded toolchain"
-
             find "$CLANG_DIR" -maxdepth 5 -name 'clang*' -print | head -50
-
             exit 1
           fi
 
@@ -226,7 +238,6 @@ jobs:
           echo "===== LLVM AR ====="
           llvm-ar --version
 
-          echo "===== LLVM OBJCOPY ====="
           llvm-objcopy --version
 
       - name: Configure GKI Defconfig
@@ -288,7 +299,6 @@ jobs:
         run: |
           set -euo pipefail
           cd kernel
-
           : > .scmversion
 
           make -j"$(nproc)" \
