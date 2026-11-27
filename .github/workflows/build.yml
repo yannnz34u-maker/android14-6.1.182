@@ -1,32 +1,17 @@
-
 name: Wowo-Quantum - Android 14 GKI 6.1.182
 
 on:
   workflow_dispatch:
     inputs:
-      enable_cpu_input_boost:
-        description: "Enable CPU Input Boost"
-        type: boolean
+      compiler:
+        description: "Select Clang toolchain"
+        type: choice
         required: true
-        default: false
-
-      enable_gpu_devfreq_boost:
-        description: "Enable GPU Devfreq Boost"
-        type: boolean
-        required: true
-        default: false
-
-      enable_uclamp_tuning:
-        description: "Enable Uclamp Tuning"
-        type: boolean
-        required: true
-        default: true
-
-      enable_ntsync:
-        description: "Enable NTsync"
-        type: boolean
-        required: true
-        default: false
+        default: google
+        options:
+          - google
+          - llvm-23.1.4
+          - neutron-06092026
 
 permissions:
   contents: read
@@ -54,11 +39,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd kernel
-
           : > .scmversion
-
           echo "===== SCM VERSION ====="
           ls -l .scmversion
 
@@ -66,7 +48,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd kernel
 
           echo "===== REPOSITORY ====="
@@ -87,80 +68,146 @@ jobs:
             exit 1
           fi
 
-          echo "===== SOURCE CHECK ====="
           test -f Makefile
           test -d arch/arm64
           test -d scripts
-
           echo "Kernel source verified: $VERSION"
 
       - name: Install Build Dependencies
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            flex \
-            git \
-            curl \
-            wget \
-            zip \
-            unzip \
-            libssl-dev \
-            libelf-dev \
-            libncurses-dev \
-            python3 \
-            python3-pip \
-            pahole \
-            lz4 \
-            device-tree-compiler \
-            rsync \
-            ccache \
-            xz-utils
+            bc bison build-essential flex git curl wget \
+            zip unzip jq libssl-dev libelf-dev libncurses-dev \
+            python3 python3-pip pahole lz4 zstd \
+            device-tree-compiler rsync ccache xz-utils
 
-      - name: Download Google Android 14 Clang
+      - name: Download Selected Clang Toolchain
         shell: bash
+        env:
+          SELECTED_COMPILER: ${{ inputs.compiler }}
         run: |
           set -euo pipefail
 
-          CLANG_DIR="$RUNNER_TEMP/google-clang"
+          CLANG_DIR="$RUNNER_TEMP/clang-toolchain"
           mkdir -p "$CLANG_DIR"
 
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz"
+          case "$SELECTED_COMPILER" in
+            google)
+              echo "Selected: Google Android 14 Clang r487747c"
+              CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r487747c.tar.gz"
+              curl -fL --retry 5 "$CLANG_URL" \
+                -o "$RUNNER_TEMP/google-clang.tar.gz"
+              tar -xzf "$RUNNER_TEMP/google-clang.tar.gz" -C "$CLANG_DIR"
+              ;;
 
-          curl -fL --retry 5 \
-            "$CLANG_URL" \
-            -o "$RUNNER_TEMP/google-clang.tar.gz"
+            llvm-23.1.4)
+              echo "Selected: Official LLVM/Clang 23.1.4"
+              LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.4/LLVM-23.1.4-Linux-X64.tar.xz"
+              curl -fL --retry 5 "$LLVM_URL" \
+                -o "$RUNNER_TEMP/llvm-23.1.4.tar.xz"
+              tar -xJf "$RUNNER_TEMP/llvm-23.1.4.tar.xz" -C "$CLANG_DIR"
+              ;;
 
-          tar -xzf "$RUNNER_TEMP/google-clang.tar.gz" \
-            -C "$CLANG_DIR"
+            neutron-06092026)
+              echo "Selected: Neutron Clang build 06092026"
 
-          test -x "$CLANG_DIR/bin/clang"
-          test -x "$CLANG_DIR/bin/ld.lld"
+              API_URL="https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/06092026"
+              curl -fL --retry 5 \
+                -H "Accept: application/vnd.github+json" \
+                "$API_URL" \
+                -o "$RUNNER_TEMP/neutron-release.json"
 
-          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+              ASSET_NAME="$(jq -r '
+                [.assets[]
+                 | select(.size > 10000000)
+                 | select(.name | test("\\.(tar\\.xz|tar\\.gz|tar\\.zst|tgz|txz|zip)$"; "i"))
+                 | select(.name | test("source"; "i") | not)]
+                | sort_by(.size)
+                | last
+                | .name // empty
+              ' "$RUNNER_TEMP/neutron-release.json")"
+
+              ASSET_URL="$(jq -r --arg name "$ASSET_NAME" '
+                .assets[]
+                | select(.name == $name)
+                | .browser_download_url
+              ' "$RUNNER_TEMP/neutron-release.json")"
+
+              if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ]; then
+                echo "::error::Could not identify Neutron compiler archive in release 06092026"
+                jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
+                  "$RUNNER_TEMP/neutron-release.json"
+                exit 1
+              fi
+
+              echo "Neutron asset: $ASSET_NAME"
+              curl -fL --retry 5 "$ASSET_URL" \
+                -o "$RUNNER_TEMP/neutron-toolchain"
+
+              case "$ASSET_NAME" in
+                *.tar.xz|*.txz)
+                  tar -xJf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  ;;
+                *.tar.gz|*.tgz)
+                  tar -xzf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  ;;
+                *.tar.zst)
+                  tar --zstd -xf "$RUNNER_TEMP/neutron-toolchain" -C "$CLANG_DIR"
+                  ;;
+                *.zip)
+                  unzip -q "$RUNNER_TEMP/neutron-toolchain" -d "$CLANG_DIR"
+                  ;;
+                *)
+                  echo "::error::Unsupported Neutron archive format: $ASSET_NAME"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            *)
+              echo "::error::Unknown compiler selection: $SELECTED_COMPILER"
+              exit 1
+              ;;
+          esac
+
+          CLANG_BIN="$(find "$CLANG_DIR" \( -type f -o -type l \) -name clang -print -quit | xargs -r dirname)"
+
+          if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN/clang" ]; then
+            echo "::error::clang executable not found in downloaded toolchain"
+            find "$CLANG_DIR" -maxdepth 5 -name 'clang*' -print | head -50
+            exit 1
+          fi
+
+          for tool in clang ld.lld llvm-ar llvm-nm llvm-objcopy; do
+            if [ ! -x "$CLANG_BIN/$tool" ]; then
+              echo "::error::Required tool missing: $CLANG_BIN/$tool"
+              exit 1
+            fi
+          done
+
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
           echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
 
-      - name: Verify Google Clang
+      - name: Verify Selected Clang
         shell: bash
         run: |
           set -euo pipefail
-
+          echo "===== CLANG ====="
           clang --version
+          echo "===== LLD ====="
           ld.lld --version
+          echo "===== LLVM AR ====="
           llvm-ar --version
           llvm-objcopy --version
 
-      - name: Configure GKI Defconfig and Gaming Features
+      - name: Configure GKI Defconfig
         shell: bash
         run: |
           set -euo pipefail
-
           cd kernel
 
           rm -f localversion localversion.*
@@ -171,56 +218,6 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             gki_defconfig
-
-          echo "===== CONFIGURE GAMING FEATURES ====="
-
-          # Check the source Kconfig files for a symbol.
-          # Do not search the generated out/ directory.
-          apply_feature() {
-            local symbol="$1"
-            local enabled="$2"
-            local found=0
-            local file
-
-            while IFS= read -r -d '' file; do
-              if grep -qE \
-                "^[[:space:]]*config[[:space:]]+${symbol}([[:space:]]|$)" \
-                "$file"; then
-                found=1
-                break
-              fi
-            done < <(
-              find . \
-                -path ./out -prune -o \
-                -path ./.git -prune -o \
-                -name 'Kconfig*' -type f -print0
-            )
-
-            if [ "$found" -eq 0 ]; then
-              echo "::warning::Kconfig symbol $symbol not found in source"
-              return 0
-            fi
-
-            if [ "$enabled" = "true" ]; then
-              ./scripts/config --file out/.config --enable "$symbol"
-              echo "$symbol requested: ENABLE"
-            else
-              ./scripts/config --file out/.config --disable "$symbol"
-              echo "$symbol requested: DISABLE"
-            fi
-          }
-
-          apply_feature INPUT_BOOST \
-            "${{ inputs.enable_cpu_input_boost }}"
-
-          apply_feature GPU_DEVFREQ_BOOST \
-            "${{ inputs.enable_gpu_devfreq_boost }}"
-
-          apply_feature UCLAMP_TASK \
-            "${{ inputs.enable_uclamp_tuning }}"
-
-          apply_feature NTSYNC \
-            "${{ inputs.enable_ntsync }}"
 
           echo "===== CONFIGURE LOCALVERSION AND THINLTO ====="
 
@@ -240,25 +237,11 @@ jobs:
             olddefconfig
 
           echo "===== CONFIG CHECK ====="
-
           grep -E \
             'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_LTO_NONE' \
             out/.config || true
 
-          echo "===== GAMING FEATURE STATUS ====="
-
-          for symbol in INPUT_BOOST GPU_DEVFREQ_BOOST UCLAMP_TASK NTSYNC; do
-            if grep -q "^CONFIG_${symbol}=y" out/.config; then
-              echo "$symbol: ENABLED"
-            elif grep -q "^CONFIG_${symbol}=m" out/.config; then
-              echo "$symbol: MODULE"
-            else
-              echo "$symbol: NOT ENABLED"
-            fi
-          done
-
           echo "===== VERIFY KERNEL RELEASE ====="
-
           RELEASE="$(make -s O=out \
             ARCH=arm64 \
             LLVM=1 \
@@ -267,7 +250,6 @@ jobs:
             kernelrelease)"
 
           echo "Kernel release: $RELEASE"
-
           if [ "$RELEASE" != "6.1.182-Wowo-Quantum" ]; then
             echo "::error::Unexpected kernel release: $RELEASE"
             exit 1
@@ -277,9 +259,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd kernel
-
           : > .scmversion
 
           make -j"$(nproc)" \
@@ -290,10 +270,7 @@ jobs:
             LOCALVERSION=-Wowo-Quantum \
             Image modules
 
-          echo "===== VERIFY IMAGE ====="
-
           IMAGE="out/arch/arm64/boot/Image"
-
           if [ ! -s "$IMAGE" ]; then
             echo "::error::Kernel Image was not generated"
             exit 1
@@ -302,8 +279,6 @@ jobs:
           echo "===== IMAGE SIZE ====="
           ls -lh "$IMAGE"
 
-          echo "===== KERNEL RELEASE ====="
-
           RELEASE="$(make -s O=out \
             ARCH=arm64 \
             LLVM=1 \
@@ -311,8 +286,7 @@ jobs:
             LOCALVERSION=-Wowo-Quantum \
             kernelrelease)"
 
-          echo "$RELEASE"
-
+          echo "Kernel release: $RELEASE"
           if [ "$RELEASE" != "6.1.182-Wowo-Quantum" ]; then
             echo "::error::Kernel release mismatch: $RELEASE"
             exit 1
@@ -322,7 +296,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           git clone --depth=1 \
             https://github.com/osm0sis/AnyKernel3.git \
             AnyKernel3
@@ -331,11 +304,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p release
 
-          cp kernel/out/arch/arm64/boot/Image \
-            AnyKernel3/Image
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
 
           cat > AnyKernel3/anykernel.sh <<'AK3EOF'
           properties() { '
@@ -394,7 +365,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd AnyKernel3
 
           zip -r9 \
