@@ -3,6 +3,30 @@ name: Wowo-Quantum - Android 14 GKI 6.1.182
 
 on:
   workflow_dispatch:
+    inputs:
+      enable_cpu_input_boost:
+        description: "Enable CPU Input Boost"
+        type: boolean
+        required: true
+        default: false
+
+      enable_gpu_devfreq_boost:
+        description: "Enable GPU Devfreq Boost"
+        type: boolean
+        required: true
+        default: false
+
+      enable_uclamp_tuning:
+        description: "Enable Uclamp Tuning"
+        type: boolean
+        required: true
+        default: true
+
+      enable_ntsync:
+        description: "Enable NTsync"
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -33,7 +57,6 @@ jobs:
 
           cd kernel
 
-          # Empty SCM version file suppresses automatic Git suffix
           : > .scmversion
 
           echo "===== SCM VERSION ====="
@@ -133,17 +156,14 @@ jobs:
           llvm-ar --version
           llvm-objcopy --version
 
-      - name: Configure GKI Defconfig
+      - name: Configure GKI Defconfig and Gaming Features
         shell: bash
         run: |
           set -euo pipefail
 
           cd kernel
 
-          # Remove source-side localversion files
           rm -f localversion localversion.*
-
-          # Ensure SCM suffix remains disabled
           : > .scmversion
 
           make O=out \
@@ -151,6 +171,56 @@ jobs:
             LLVM=1 \
             LLVM_IAS=1 \
             gki_defconfig
+
+          echo "===== CONFIGURE GAMING FEATURES ====="
+
+          # Check the source Kconfig files for a symbol.
+          # Do not search the generated out/ directory.
+          apply_feature() {
+            local symbol="$1"
+            local enabled="$2"
+            local found=0
+            local file
+
+            while IFS= read -r -d '' file; do
+              if grep -qE \
+                "^[[:space:]]*config[[:space:]]+${symbol}([[:space:]]|$)" \
+                "$file"; then
+                found=1
+                break
+              fi
+            done < <(
+              find . \
+                -path ./out -prune -o \
+                -path ./.git -prune -o \
+                -name 'Kconfig*' -type f -print0
+            )
+
+            if [ "$found" -eq 0 ]; then
+              echo "::warning::Kconfig symbol $symbol not found in source"
+              return 0
+            fi
+
+            if [ "$enabled" = "true" ]; then
+              ./scripts/config --file out/.config --enable "$symbol"
+              echo "$symbol requested: ENABLE"
+            else
+              ./scripts/config --file out/.config --disable "$symbol"
+              echo "$symbol requested: DISABLE"
+            fi
+          }
+
+          apply_feature INPUT_BOOST \
+            "${{ inputs.enable_cpu_input_boost }}"
+
+          apply_feature GPU_DEVFREQ_BOOST \
+            "${{ inputs.enable_gpu_devfreq_boost }}"
+
+          apply_feature UCLAMP_TASK \
+            "${{ inputs.enable_uclamp_tuning }}"
+
+          apply_feature NTSYNC \
+            "${{ inputs.enable_ntsync }}"
 
           echo "===== CONFIGURE LOCALVERSION AND THINLTO ====="
 
@@ -175,6 +245,18 @@ jobs:
             'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_LTO_NONE' \
             out/.config || true
 
+          echo "===== GAMING FEATURE STATUS ====="
+
+          for symbol in INPUT_BOOST GPU_DEVFREQ_BOOST UCLAMP_TASK NTSYNC; do
+            if grep -q "^CONFIG_${symbol}=y" out/.config; then
+              echo "$symbol: ENABLED"
+            elif grep -q "^CONFIG_${symbol}=m" out/.config; then
+              echo "$symbol: MODULE"
+            else
+              echo "$symbol: NOT ENABLED"
+            fi
+          done
+
           echo "===== VERIFY KERNEL RELEASE ====="
 
           RELEASE="$(make -s O=out \
@@ -198,7 +280,6 @@ jobs:
 
           cd kernel
 
-          # Keep SCM suffix disabled during compilation
           : > .scmversion
 
           make -j"$(nproc)" \
