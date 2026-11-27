@@ -1,5 +1,5 @@
 
-name: Wowo-Quantum - Android 14 GKI 6.1.182
+name: Wowo-Quantum - Android 14 GKI 6.1.182 + KSUN + SUSFS
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   build:
-    name: Wowo-Quantum GKI 6.1.182 + AnyKernel3
+    name: Wowo-Quantum GKI 6.1.182 + KSUN + SUSFS + AnyKernel3
     runs-on: ubuntu-24.04
     timeout-minutes: 360
 
@@ -29,6 +29,10 @@ jobs:
       KBUILD_BUILD_HOST: yannn34u
 
     steps:
+      # ==========================================
+      # CHECKOUT KERNEL
+      # ==========================================
+
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
@@ -37,19 +41,181 @@ jobs:
           fetch-depth: 0
           path: kernel
 
+      # ==========================================
+      # KERNELSU-NEXT
+      # ==========================================
+
+      - name: Install KernelSU-Next
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          echo "===== INSTALL KERNELSU-NEXT ====="
+
+          curl -fLSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            -o "$RUNNER_TEMP/ksun-setup.sh"
+
+          bash "$RUNNER_TEMP/ksun-setup.sh" next
+
+          echo "===== VERIFY KERNELSU-NEXT ====="
+
+          if [ ! -d drivers/kernelsu ]; then
+            echo "::error::KernelSU-Next integration directory not found"
+            find . -maxdepth 4 -iname '*kernelsu*' -print
+            exit 1
+          fi
+
+          echo "KernelSU-Next integrated"
+
+      # ==========================================
+      # SUSFS OFFICIAL
+      # ==========================================
+
+      - name: Clone Official SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth=1 \
+            -b gki-android14-6.1 \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            susfs4ksu
+
+          echo "===== SUSFS BRANCH ====="
+          git -C susfs4ksu branch --show-current
+
+          echo "===== SUSFS COMMIT ====="
+          git -C susfs4ksu log -1 --oneline
+
+      - name: Apply Official SUSFS Kernel Patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
+
+          cd "$KERNEL_DIR"
+
+          echo "===== CHECK SUSFS PATCH ====="
+
+          SUSFS_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+
+          if [ ! -f "$SUSFS_PATCH" ]; then
+            echo "::error::Official SUSFS GKI 6.1 patch not found"
+
+            find "$SUSFS_DIR/kernel_patches" \
+              -maxdepth 3 -type f -print
+
+            exit 1
+          fi
+
+          echo "===== COPY SUSFS SOURCE FILES ====="
+
+          cp -v "$SUSFS_DIR"/kernel_patches/fs/* fs/
+
+          cp -v "$SUSFS_DIR"/kernel_patches/include/linux/* include/linux/
+
+          echo "===== APPLY SUSFS PATCH ====="
+
+          if patch --dry-run --batch -p1 < "$SUSFS_PATCH"; then
+            patch --batch -p1 < "$SUSFS_PATCH"
+          else
+            echo "::error::Official SUSFS patch cannot be applied"
+            echo "::error::Check kernel source compatibility"
+            exit 1
+          fi
+
+          echo "===== SUSFS KERNEL PATCH APPLIED ====="
+
+      # ==========================================
+      # SUSFS + KERNELSU-NEXT
+      # ==========================================
+
+      - name: Check SUSFS KernelSU-Next Integration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
+
+          cd "$KERNEL_DIR"
+
+          echo "===== CHECK KSUN SUSFS SUPPORT ====="
+
+          grep -Rns \
+            --include='Kconfig*' \
+            --include='*.c' \
+            --include='*.h' \
+            'KSU_SUSFS' \
+            drivers/kernelsu || true
+
+          echo "===== CHECK OFFICIAL KSUN PATCH ====="
+
+          KSU_PATCH="$(find "$SUSFS_DIR/kernel_patches" \
+            -type f \
+            -iname '*susfs*ksu*.patch' \
+            -print -quit)"
+
+          if [ -n "$KSU_PATCH" ]; then
+            echo "Found SUSFS KernelSU patch:"
+            echo "$KSU_PATCH"
+
+            if patch --dry-run --batch -p1 < "$KSU_PATCH"; then
+              patch --batch -p1 < "$KSU_PATCH"
+              echo "KernelSU SUSFS patch applied"
+            else
+              echo "::warning::KernelSU SUSFS patch does not apply to this KSUN source"
+              echo "::warning::Checking whether KSUN already contains SUSFS integration"
+            fi
+          else
+            echo "::warning::No separate KernelSU SUSFS patch found"
+            echo "::warning::Checking built-in KSUN SUSFS support"
+          fi
+
+          echo "===== CHECK SUSFS CONFIG SYMBOL ====="
+
+          if ! grep -RqsE \
+            '^[[:space:]]*config KSU_SUSFS$' \
+            --include='Kconfig*' \
+            drivers/kernelsu; then
+
+            echo "::error::KSU_SUSFS Kconfig symbol not found"
+            echo "::error::KSUN SUSFS integration is incomplete"
+            exit 1
+          fi
+
+          echo "KSUN SUSFS Kconfig symbol found"
+
+      # ==========================================
+      # DISABLE GIT SUFFIX
+      # ==========================================
+
       - name: Disable Automatic Git Kernel Suffix
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel
+
           : > .scmversion
+
           echo "===== SCM VERSION ====="
           ls -l .scmversion
+
+      # ==========================================
+      # VERIFY SOURCE
+      # ==========================================
 
       - name: Verify Kernel Source
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel
 
           echo "===== REPOSITORY ====="
@@ -62,7 +228,9 @@ jobs:
           git log -1 --oneline
 
           echo "===== KERNEL VERSION ====="
+
           VERSION="$(make -s kernelversion)"
+
           echo "$VERSION"
 
           if [ "$VERSION" != "6.1.182" ]; then
@@ -73,18 +241,29 @@ jobs:
           test -f Makefile
           test -d arch/arm64
           test -d scripts
+
           echo "Kernel source verified: $VERSION"
+
+      # ==========================================
+      # BUILD DEPENDENCIES
+      # ==========================================
 
       - name: Install Build Dependencies
         shell: bash
         run: |
           set -euo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             bc bison build-essential flex git curl wget \
             zip unzip jq libssl-dev libelf-dev libncurses-dev \
             python3 python3-pip pahole lz4 zstd \
             device-tree-compiler rsync ccache xz-utils
+
+      # ==========================================
+      # DOWNLOAD CLANG
+      # ==========================================
 
       - name: Download Selected Clang Toolchain
         shell: bash
@@ -94,9 +273,11 @@ jobs:
           set -euo pipefail
 
           CLANG_DIR="$RUNNER_TEMP/clang-toolchain"
+
           mkdir -p "$CLANG_DIR"
 
           case "$SELECTED_COMPILER" in
+
             google)
               echo "Selected: Google Android 14 Clang r487747c"
 
@@ -110,7 +291,7 @@ jobs:
               ;;
 
             aosp-clang-r614150)
-              echo "Selected: AOSP Clang 23.0.1 r614150"
+              echo "Selected: AOSP Clang r614150"
 
               AOSP_CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/mirror-goog-main-llvm-toolchain-source/clang-r614150.tar.gz"
 
@@ -160,7 +341,7 @@ jobs:
               ' "$RUNNER_TEMP/neutron-release.json")"
 
               if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ]; then
-                echo "::error::Could not identify Neutron compiler archive in release 06092026"
+                echo "::error::Could not identify Neutron compiler archive"
 
                 jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
                   "$RUNNER_TEMP/neutron-release.json"
@@ -174,24 +355,29 @@ jobs:
                 -o "$RUNNER_TEMP/neutron-toolchain"
 
               case "$ASSET_NAME" in
+
                 *.tar.xz|*.txz)
                   tar -xJf "$RUNNER_TEMP/neutron-toolchain" \
                     -C "$CLANG_DIR"
                   ;;
+
                 *.tar.gz|*.tgz)
                   tar -xzf "$RUNNER_TEMP/neutron-toolchain" \
                     -C "$CLANG_DIR"
                   ;;
+
                 *.tar.zst)
                   tar --zstd -xf "$RUNNER_TEMP/neutron-toolchain" \
                     -C "$CLANG_DIR"
                   ;;
+
                 *.zip)
                   unzip -q "$RUNNER_TEMP/neutron-toolchain" \
                     -d "$CLANG_DIR"
                   ;;
+
                 *)
-                  echo "::error::Unsupported Neutron archive format: $ASSET_NAME"
+                  echo "::error::Unsupported Neutron archive format"
                   exit 1
                   ;;
               esac
@@ -208,8 +394,10 @@ jobs:
             -name clang -print -quit | xargs -r dirname)"
 
           if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN/clang" ]; then
-            echo "::error::clang executable not found in downloaded toolchain"
+            echo "::error::clang executable not found"
+
             find "$CLANG_DIR" -maxdepth 5 -name 'clang*' -print | head -50
+
             exit 1
           fi
 
@@ -221,8 +409,13 @@ jobs:
           done
 
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
+
           echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+
+      # ==========================================
+      # VERIFY CLANG
+      # ==========================================
 
       - name: Verify Selected Clang
         shell: bash
@@ -240,20 +433,56 @@ jobs:
 
           llvm-objcopy --version
 
+      # ==========================================
+      # CONFIGURE GKI + KSUN + SUSFS
+      # ==========================================
+
       - name: Configure GKI Defconfig
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel
 
           rm -f localversion localversion.*
+
           : > .scmversion
+
+          echo "===== GKI DEFCONFIG ====="
 
           make O=out \
             ARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             gki_defconfig
+
+          echo "===== ENABLE KERNELSU-NEXT ====="
+
+          if grep -RqsE \
+            '^[[:space:]]*config KSU$' \
+            --include='Kconfig*' \
+            drivers/kernelsu; then
+
+            ./scripts/config --file out/.config \
+              -e KSU
+
+          elif grep -RqsE \
+            '^[[:space:]]*config KSU_NEXT$' \
+            --include='Kconfig*' \
+            drivers/kernelsu; then
+
+            ./scripts/config --file out/.config \
+              -e KSU_NEXT
+
+          else
+            echo "::error::KernelSU-Next Kconfig symbol not found"
+            exit 1
+          fi
+
+          echo "===== ENABLE SUSFS ====="
+
+          ./scripts/config --file out/.config \
+            -e KSU_SUSFS
 
           echo "===== CONFIGURE LOCALVERSION AND THINLTO ====="
 
@@ -275,8 +504,15 @@ jobs:
           echo "===== CONFIG CHECK ====="
 
           grep -E \
-            'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_LTO_NONE' \
+            'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_KSU|CONFIG_KSU_SUSFS' \
             out/.config || true
+
+          echo "===== VERIFY SUSFS CONFIG ====="
+
+          if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+            echo "::error::CONFIG_KSU_SUSFS is not enabled"
+            exit 1
+          fi
 
           echo "===== VERIFY KERNEL RELEASE ====="
 
@@ -294,11 +530,17 @@ jobs:
             exit 1
           fi
 
+      # ==========================================
+      # COMPILE KERNEL
+      # ==========================================
+
       - name: Compile Kernel Image and Modules
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel
+
           : > .scmversion
 
           make -j"$(nproc)" \
@@ -333,6 +575,10 @@ jobs:
             exit 1
           fi
 
+      # ==========================================
+      # ANYKERNEL3
+      # ==========================================
+
       - name: Clone AnyKernel3
         shell: bash
         run: |
@@ -346,13 +592,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p release
 
-          cp kernel/out/arch/arm64/boot/Image AnyKernel3/Image
+          cp kernel/out/arch/arm64/boot/Image \
+            AnyKernel3/Image
 
           cat > AnyKernel3/anykernel.sh <<'AK3EOF'
           properties() { '
-          kernel.string=Quantum wowoLTS GKI 6.1.182
+          kernel.string=Quantum wowoLTS GKI 6.1.182 KSUN SUSFS
           do.devicecheck=1
           do.modules=0
           do.systemless=1
@@ -385,6 +633,7 @@ jobs:
           ui_print ''
           ui_print '  -----------------------------------------------'
           ui_print '     QUANTUM wowoLTS | ANDROID 14 | GKI 6.1'
+          ui_print '                KSUN + SUSFS'
           ui_print '  -----------------------------------------------'
           ui_print ''
 
@@ -403,26 +652,35 @@ jobs:
           ui_print ''
           AK3EOF
 
+      # ==========================================
+      # PACK ZIP
+      # ==========================================
+
       - name: Pack AnyKernel3 ZIP
         shell: bash
         run: |
           set -euo pipefail
+
           cd AnyKernel3
 
           zip -r9 \
-            ../release/Wowo-Quantum-Malachite-GKI-6.1.182.zip . \
+            ../release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip . \
             -x '.git/*' \
             -x 'README.md' \
             -x '*placeholder*'
 
-          test -s ../release/Wowo-Quantum-Malachite-GKI-6.1.182.zip
+          test -s ../release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip
+
+      # ==========================================
+      # UPLOAD ARTIFACTS
+      # ==========================================
 
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Wowo-Quantum-GKI-6.1.182
+          name: Wowo-Quantum-GKI-6.1.182-KSUN-SUSFS
           path: |
             kernel/out/arch/arm64/boot/Image
             kernel/out/vmlinux
-            release/Wowo-Quantum-Malachite-GKI-6.1.182.zip
+            release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip
           retention-days: 14
