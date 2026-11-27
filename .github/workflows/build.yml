@@ -106,7 +106,7 @@ jobs:
 
             aosp-clang-r639965)
               echo "Selected: AOSP Clang r639965 (build 17033917)"
-              AOSP_CLANG_URL="https://github.com/ip2na/aosp_clang_mirror/releases/download/clang-r639965-17033917/clang-r639965.tar.gz"
+              AOSP_CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/mirror-goog-main-llvm-toolchain-source/clang-r639965.tar.gz"
               curl -fL --retry 5 "$AOSP_CLANG_URL" \\
                 -o "$RUNNER_TEMP/aosp-clang-r639965.tar.gz"
               tar -xzf "$RUNNER_TEMP/aosp-clang-r639965.tar.gz" \\
