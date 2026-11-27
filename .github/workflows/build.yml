@@ -42,173 +42,7 @@ jobs:
           path: kernel
 
       # ==========================================
-      # KERNELSU-NEXT
-      # ==========================================
-
-      - name: Install KernelSU-Next
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          echo "===== INSTALL KERNELSU-NEXT ====="
-
-          curl -fLSs \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-            -o "$RUNNER_TEMP/ksun-setup.sh"
-
-          bash "$RUNNER_TEMP/ksun-setup.sh" next
-
-          echo "===== VERIFY KERNELSU-NEXT ====="
-
-          if [ ! -d drivers/kernelsu ]; then
-            echo "::error::KernelSU-Next integration directory not found"
-            find . -maxdepth 4 -iname '*kernelsu*' -print
-            exit 1
-          fi
-
-          echo "KernelSU-Next integrated"
-
-      # ==========================================
-      # SUSFS OFFICIAL
-      # ==========================================
-
-      - name: Clone Official SUSFS
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git clone --depth=1 \
-            -b gki-android14-6.1 \
-            https://gitlab.com/simonpunk/susfs4ksu.git \
-            susfs4ksu
-
-          echo "===== SUSFS BRANCH ====="
-          git -C susfs4ksu branch --show-current
-
-          echo "===== SUSFS COMMIT ====="
-          git -C susfs4ksu log -1 --oneline
-
-      - name: Apply Official SUSFS Kernel Patch
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
-
-          cd "$KERNEL_DIR"
-
-          echo "===== CHECK SUSFS PATCH ====="
-
-          SUSFS_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
-
-          if [ ! -f "$SUSFS_PATCH" ]; then
-            echo "::error::Official SUSFS GKI 6.1 patch not found"
-
-            find "$SUSFS_DIR/kernel_patches" \
-              -maxdepth 3 -type f -print
-
-            exit 1
-          fi
-
-          echo "===== COPY SUSFS SOURCE FILES ====="
-
-          cp -v "$SUSFS_DIR"/kernel_patches/fs/* fs/
-
-          cp -v "$SUSFS_DIR"/kernel_patches/include/linux/* include/linux/
-
-          echo "===== APPLY SUSFS PATCH ====="
-
-          if patch --dry-run --batch -p1 < "$SUSFS_PATCH"; then
-            patch --batch -p1 < "$SUSFS_PATCH"
-          else
-            echo "::error::Official SUSFS patch cannot be applied"
-            echo "::error::Check kernel source compatibility"
-            exit 1
-          fi
-
-          echo "===== SUSFS KERNEL PATCH APPLIED ====="
-
-      # ==========================================
-      # SUSFS + KERNELSU-NEXT
-      # ==========================================
-
-      - name: Check SUSFS KernelSU-Next Integration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
-
-          cd "$KERNEL_DIR"
-
-          echo "===== CHECK KSUN SUSFS SUPPORT ====="
-
-          grep -Rns \
-            --include='Kconfig*' \
-            --include='*.c' \
-            --include='*.h' \
-            'KSU_SUSFS' \
-            drivers/kernelsu || true
-
-          echo "===== CHECK OFFICIAL KSUN PATCH ====="
-
-          KSU_PATCH="$(find "$SUSFS_DIR/kernel_patches" \
-            -type f \
-            -iname '*susfs*ksu*.patch' \
-            -print -quit)"
-
-          if [ -n "$KSU_PATCH" ]; then
-            echo "Found SUSFS KernelSU patch:"
-            echo "$KSU_PATCH"
-
-            if patch --dry-run --batch -p1 < "$KSU_PATCH"; then
-              patch --batch -p1 < "$KSU_PATCH"
-              echo "KernelSU SUSFS patch applied"
-            else
-              echo "::warning::KernelSU SUSFS patch does not apply to this KSUN source"
-              echo "::warning::Checking whether KSUN already contains SUSFS integration"
-            fi
-          else
-            echo "::warning::No separate KernelSU SUSFS patch found"
-            echo "::warning::Checking built-in KSUN SUSFS support"
-          fi
-
-          echo "===== CHECK SUSFS CONFIG SYMBOL ====="
-
-          if ! grep -RqsE \
-            '^[[:space:]]*config KSU_SUSFS$' \
-            --include='Kconfig*' \
-            drivers/kernelsu; then
-
-            echo "::error::KSU_SUSFS Kconfig symbol not found"
-            echo "::error::KSUN SUSFS integration is incomplete"
-            exit 1
-          fi
-
-          echo "KSUN SUSFS Kconfig symbol found"
-
-      # ==========================================
-      # DISABLE GIT SUFFIX
-      # ==========================================
-
-      - name: Disable Automatic Git Kernel Suffix
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd kernel
-
-          : > .scmversion
-
-          echo "===== SCM VERSION ====="
-          ls -l .scmversion
-
-      # ==========================================
-      # VERIFY SOURCE
+      # VERIFY SOURCE VERSION
       # ==========================================
 
       - name: Verify Kernel Source
@@ -227,11 +61,9 @@ jobs:
           echo "===== COMMIT ====="
           git log -1 --oneline
 
-          echo "===== KERNEL VERSION ====="
-
           VERSION="$(make -s kernelversion)"
 
-          echo "$VERSION"
+          echo "Kernel version: $VERSION"
 
           if [ "$VERSION" != "6.1.182" ]; then
             echo "::error::Expected kernel 6.1.182, found $VERSION"
@@ -242,7 +74,7 @@ jobs:
           test -d arch/arm64
           test -d scripts
 
-          echo "Kernel source verified: $VERSION"
+          echo "Kernel source verified"
 
       # ==========================================
       # BUILD DEPENDENCIES
@@ -259,7 +91,231 @@ jobs:
             bc bison build-essential flex git curl wget \
             zip unzip jq libssl-dev libelf-dev libncurses-dev \
             python3 python3-pip pahole lz4 zstd \
-            device-tree-compiler rsync ccache xz-utils
+            device-tree-compiler rsync ccache xz-utils \
+            libxml2-utils
+
+      # ==========================================
+      # KERNELSU-NEXT
+      # ==========================================
+
+      - name: Install KernelSU-Next
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$GITHUB_WORKSPACE/kernel"
+
+          echo "===== DOWNLOAD KSUN SETUP ====="
+
+          curl -fLSs --retry 5 \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            -o "$RUNNER_TEMP/ksun-setup.sh"
+
+          echo "===== INSTALL KSUN ====="
+
+          bash "$RUNNER_TEMP/ksun-setup.sh" next
+
+          echo "===== VERIFY KSUN ====="
+
+          if [ ! -e drivers/kernelsu ]; then
+            echo "::error::KernelSU-Next drivers/kernelsu was not created"
+            find . -maxdepth 4 -iname '*kernelsu*' -print
+            exit 1
+          fi
+
+          KSUN_KERNEL_DIR="$(realpath drivers/kernelsu)"
+
+          echo "KernelSU kernel source:"
+          echo "$KSUN_KERNEL_DIR"
+
+          if [ ! -f "$KSUN_KERNEL_DIR/Kconfig" ]; then
+            echo "::error::KernelSU Kconfig not found"
+            exit 1
+          fi
+
+          echo "KernelSU-Next integrated successfully"
+
+      # ==========================================
+      # CLONE SUSFS
+      # ==========================================
+
+      - name: Clone Official SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth=1 \
+            -b gki-android14-6.1 \
+            https://gitlab.com/simonpunk/susfs4ksu.git \
+            susfs4ksu
+
+          echo "===== SUSFS BRANCH ====="
+          git -C susfs4ksu branch --show-current
+
+          echo "===== SUSFS COMMIT ====="
+          git -C susfs4ksu log -1 --oneline
+
+          echo "===== SUSFS PATCH FILES ====="
+          find susfs4ksu/kernel_patches \
+            -maxdepth 3 -type f -print
+
+      # ==========================================
+      # APPLY SUSFS KERNEL PATCH
+      # ==========================================
+
+      - name: Apply SUSFS GKI 6.1 Kernel Patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
+
+          cd "$KERNEL_DIR"
+
+          echo "===== SELECT SUSFS PATCH ====="
+
+          GKI_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-android14-6.1_GKI.patch"
+          GENERIC_PATCH="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch"
+
+          if [ -f "$GKI_PATCH" ]; then
+            SUSFS_PATCH="$GKI_PATCH"
+            echo "Using GKI-specific patch"
+          elif [ -f "$GENERIC_PATCH" ]; then
+            SUSFS_PATCH="$GENERIC_PATCH"
+            echo "Using generic GKI 6.1 patch"
+          else
+            echo "::error::SUSFS GKI 6.1 patch not found"
+            find "$SUSFS_DIR/kernel_patches" -type f -print
+            exit 1
+          fi
+
+          echo "Selected patch: $SUSFS_PATCH"
+
+          echo "===== COPY SUSFS SOURCE FILES ====="
+
+          if [ ! -d "$SUSFS_DIR/kernel_patches/fs" ]; then
+            echo "::error::SUSFS fs source directory missing"
+            exit 1
+          fi
+
+          if [ ! -d "$SUSFS_DIR/kernel_patches/include/linux" ]; then
+            echo "::error::SUSFS include source directory missing"
+            exit 1
+          fi
+
+          cp -av "$SUSFS_DIR/kernel_patches/fs/." fs/
+          cp -av "$SUSFS_DIR/kernel_patches/include/linux/." include/linux/
+
+          echo "===== DRY RUN SUSFS PATCH ====="
+
+          if ! patch --dry-run --batch -p1 < "$SUSFS_PATCH"; then
+            echo "::error::SUSFS kernel patch is incompatible with this source"
+            exit 1
+          fi
+
+          echo "===== APPLY SUSFS PATCH ====="
+
+          patch --batch -p1 < "$SUSFS_PATCH"
+
+          echo "SUSFS kernel patch applied"
+
+      # ==========================================
+      # APPLY SUSFS KSUN PATCH
+      # ==========================================
+
+      - name: Apply SUSFS KernelSU-Next Patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+          SUSFS_DIR="$GITHUB_WORKSPACE/susfs4ksu"
+
+          cd "$KERNEL_DIR"
+
+          echo "===== LOCATE KSUN SOURCE ====="
+
+          if [ ! -e drivers/kernelsu ]; then
+            echo "::error::drivers/kernelsu not found"
+            exit 1
+          fi
+
+          KSUN_KERNEL_DIR="$(realpath drivers/kernelsu)"
+          KSUN_ROOT="$(dirname "$KSUN_KERNEL_DIR")"
+
+          echo "KernelSU kernel directory:"
+          echo "$KSUN_KERNEL_DIR"
+
+          echo "KernelSU repository root:"
+          echo "$KSUN_ROOT"
+
+          echo "===== CHECK BUILT-IN SUSFS ====="
+
+          if grep -RqsE \
+            '^[[:space:]]*config KSU_SUSFS([[:space:]]|$)' \
+            --include='Kconfig*' \
+            "$KSUN_KERNEL_DIR"; then
+
+            echo "KernelSU-Next already contains KSU_SUSFS"
+            echo "Skipping separate KernelSU SUSFS patch"
+
+          else
+            KSU_PATCH="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+
+            if [ ! -f "$KSU_PATCH" ]; then
+              echo "::error::SUSFS KernelSU patch not found"
+              find "$SUSFS_DIR/kernel_patches" -type f -print
+              exit 1
+            fi
+
+            echo "KernelSU patch:"
+            echo "$KSU_PATCH"
+
+            cd "$KSUN_ROOT"
+
+            echo "===== DRY RUN KSUN PATCH ====="
+
+            if ! patch --dry-run --batch -p1 < "$KSU_PATCH"; then
+              echo "::error::SUSFS patch does not match KernelSU-Next source"
+              exit 1
+            fi
+
+            echo "===== APPLY KSUN PATCH ====="
+
+            patch --batch -p1 < "$KSU_PATCH"
+
+            echo "KernelSU SUSFS patch applied"
+          fi
+
+          echo "===== VERIFY KSUN SUSFS CONFIG ====="
+
+          if ! grep -RqsE \
+            '^[[:space:]]*config KSU_SUSFS([[:space:]]|$)' \
+            --include='Kconfig*' \
+            "$KSUN_KERNEL_DIR"; then
+
+            echo "::error::KSU_SUSFS Kconfig symbol not found"
+            exit 1
+          fi
+
+          echo "KSU_SUSFS Kconfig verified"
+
+      # ==========================================
+      # DISABLE AUTOMATIC GIT SUFFIX
+      # ==========================================
+
+      - name: Disable Automatic Git Kernel Suffix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel
+
+          : > .scmversion
+
+          echo "===== SCM VERSION FILE ====="
+          ls -l .scmversion
 
       # ==========================================
       # DOWNLOAD CLANG
@@ -315,7 +371,7 @@ jobs:
               ;;
 
             neutron-06092026)
-              echo "Selected: Neutron Clang build 06092026"
+              echo "Selected: Neutron Clang 06092026"
 
               API_URL="https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/tags/06092026"
 
@@ -334,18 +390,23 @@ jobs:
                 | .name // empty
               ' "$RUNNER_TEMP/neutron-release.json")"
 
+              if [ -z "$ASSET_NAME" ]; then
+                echo "::error::Neutron compiler archive not found"
+
+                jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
+                  "$RUNNER_TEMP/neutron-release.json"
+
+                exit 1
+              fi
+
               ASSET_URL="$(jq -r --arg name "$ASSET_NAME" '
                 .assets[]
                 | select(.name == $name)
                 | .browser_download_url
               ' "$RUNNER_TEMP/neutron-release.json")"
 
-              if [ -z "$ASSET_NAME" ] || [ -z "$ASSET_URL" ]; then
-                echo "::error::Could not identify Neutron compiler archive"
-
-                jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
-                  "$RUNNER_TEMP/neutron-release.json"
-
+              if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+                echo "::error::Neutron compiler download URL is empty"
                 exit 1
               fi
 
@@ -389,14 +450,18 @@ jobs:
               ;;
           esac
 
-          CLANG_BIN="$(find "$CLANG_DIR" \
-            \( -type f -o -type l \) \
-            -name clang -print -quit | xargs -r dirname)"
+          echo "===== LOCATE CLANG ====="
+
+          CLANG_BIN="$(find -L "$CLANG_DIR" \
+            -type f \
+            -name clang \
+            -print -quit | xargs -r dirname)"
 
           if [ -z "$CLANG_BIN" ] || [ ! -x "$CLANG_BIN/clang" ]; then
             echo "::error::clang executable not found"
 
-            find "$CLANG_DIR" -maxdepth 5 -name 'clang*' -print | head -50
+            find "$CLANG_DIR" -maxdepth 6 \
+              -name 'clang*' -print | head -80
 
             exit 1
           fi
@@ -412,6 +477,8 @@ jobs:
 
           echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+
+          echo "Clang directory: $CLANG_BIN"
 
       # ==========================================
       # VERIFY CLANG
@@ -431,6 +498,7 @@ jobs:
           echo "===== LLVM AR ====="
           llvm-ar --version
 
+          echo "===== LLVM OBJCOPY ====="
           llvm-objcopy --version
 
       # ==========================================
@@ -443,8 +511,6 @@ jobs:
           set -euo pipefail
 
           cd kernel
-
-          rm -f localversion localversion.*
 
           : > .scmversion
 
@@ -459,7 +525,7 @@ jobs:
           echo "===== ENABLE KERNELSU-NEXT ====="
 
           if grep -RqsE \
-            '^[[:space:]]*config KSU$' \
+            '^[[:space:]]*config KSU([[:space:]]|$)' \
             --include='Kconfig*' \
             drivers/kernelsu; then
 
@@ -467,7 +533,7 @@ jobs:
               -e KSU
 
           elif grep -RqsE \
-            '^[[:space:]]*config KSU_NEXT$' \
+            '^[[:space:]]*config KSU_NEXT([[:space:]]|$)' \
             --include='Kconfig*' \
             drivers/kernelsu; then
 
@@ -475,14 +541,34 @@ jobs:
               -e KSU_NEXT
 
           else
-            echo "::error::KernelSU-Next Kconfig symbol not found"
+            echo "::error::KernelSU Kconfig symbol not found"
             exit 1
           fi
 
           echo "===== ENABLE SUSFS ====="
 
+          if ! grep -RqsE \
+            '^[[:space:]]*config KSU_SUSFS([[:space:]]|$)' \
+            --include='Kconfig*' \
+            drivers/kernelsu; then
+
+            echo "::error::KSU_SUSFS Kconfig symbol not found"
+            exit 1
+          fi
+
           ./scripts/config --file out/.config \
             -e KSU_SUSFS
+
+          echo "===== ENABLE SUSFS MAGIC MOUNT IF AVAILABLE ====="
+
+          if grep -RqsE \
+            '^[[:space:]]*config KSU_SUSFS_HAS_MAGIC_MOUNT([[:space:]]|$)' \
+            --include='Kconfig*' \
+            drivers/kernelsu; then
+
+            ./scripts/config --file out/.config \
+              -e KSU_SUSFS_HAS_MAGIC_MOUNT
+          fi
 
           echo "===== CONFIGURE LOCALVERSION AND THINLTO ====="
 
@@ -507,7 +593,14 @@ jobs:
             'CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO|CONFIG_LTO_CLANG|CONFIG_LTO_CLANG_THIN|CONFIG_KSU|CONFIG_KSU_SUSFS' \
             out/.config || true
 
-          echo "===== VERIFY SUSFS CONFIG ====="
+          echo "===== VERIFY KSUN ====="
+
+          if ! grep -q '^CONFIG_KSU=y' out/.config; then
+            echo "::error::CONFIG_KSU is not enabled"
+            exit 1
+          fi
+
+          echo "===== VERIFY SUSFS ====="
 
           if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
             echo "::error::CONFIG_KSU_SUSFS is not enabled"
@@ -543,6 +636,8 @@ jobs:
 
           : > .scmversion
 
+          echo "===== BUILD KERNEL ====="
+
           make -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
@@ -560,6 +655,9 @@ jobs:
 
           echo "===== IMAGE SIZE ====="
           ls -lh "$IMAGE"
+
+          echo "===== VMLINUX ====="
+          ls -lh out/vmlinux
 
           RELEASE="$(make -s O=out \
             ARCH=arm64 \
@@ -671,6 +769,9 @@ jobs:
 
           test -s ../release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip
 
+          echo "===== ZIP SIZE ====="
+          ls -lh ../release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip
+
       # ==========================================
       # UPLOAD ARTIFACTS
       # ==========================================
@@ -683,4 +784,5 @@ jobs:
             kernel/out/arch/arm64/boot/Image
             kernel/out/vmlinux
             release/Wowo-Quantum-Malachite-GKI-6.1.182-KSUN-SUSFS.zip
+          if-no-files-found: error
           retention-days: 14
